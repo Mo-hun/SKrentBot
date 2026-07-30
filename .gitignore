@@ -1,0 +1,4 @@
+.env
+.skr-bot-state.json
+node_modules/
+npm-debug.log*
