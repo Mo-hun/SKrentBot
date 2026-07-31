@@ -13,7 +13,13 @@ main().catch((error) => {
 async function main() {
   loadDotEnv('.env');
 
-  const config = await readConfig();
+  const isDiscordTest = process.argv.includes('--test-discord');
+  const config = await readConfig({ requireSkrRequestBody: !isDiscordTest });
+  if (isDiscordTest) {
+    await testDiscord(config);
+    return;
+  }
+
   console.log(
     `[start] watching ${config.targetName || config.targetShtpCrnfId} at branch ${config.targetBrnhId}`,
   );
@@ -159,6 +165,37 @@ async function notifyDiscord(config, vehicle, checkedAt) {
   await sendDiscordWebhookMessage(config, message);
 }
 
+async function testDiscord(config) {
+  const checkedAt = new Date();
+  const message = {
+    content: 'SK렌터카 알림 봇 테스트',
+    embeds: [
+      {
+        title: 'Discord 알림 테스트',
+        description: [
+          `대상 차량: ${config.targetName || config.targetShtpCrnfId}`,
+          `지점 ID: ${config.targetBrnhId}`,
+          `테스트 시각: ${formatKst(checkedAt)}`,
+        ].join('\n'),
+        color: 0x3b82f6,
+      },
+    ],
+  };
+
+  if (config.dryRun) {
+    console.log(`[discord:dry-run] ${JSON.stringify(message, null, 2)}`);
+    return;
+  }
+
+  if (config.discordBotToken && config.discordChannelId) {
+    await sendDiscordBotMessage(config, message);
+  } else {
+    await sendDiscordWebhookMessage(config, message);
+  }
+
+  console.log('[discord] test message sent');
+}
+
 async function sendDiscordWebhookMessage(config, message) {
   const response = await fetch(config.discordWebhookUrl, {
     method: 'POST',
@@ -195,8 +232,8 @@ async function sendDiscordBotMessage(config, message) {
   }
 }
 
-async function readConfig() {
-  const requestBody = await readRequestBody();
+async function readConfig({ requireSkrRequestBody = true } = {}) {
+  const requestBody = requireSkrRequestBody ? await readRequestBody() : null;
   const headers = parseJsonEnv('SKR_HEADERS_JSON', {
     'content-type': 'application/json',
     accept: 'application/json, text/plain, */*',

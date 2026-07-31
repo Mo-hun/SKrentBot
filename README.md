@@ -17,6 +17,12 @@
 npm start
 ```
 
+Discord 알림만 테스트하려면 SK렌터카 API를 호출하지 않는 테스트 명령을 사용합니다.
+
+```bash
+npm run test:discord
+```
+
 봇은 이전 상태를 `STATE_FILE`에 저장합니다. 재고가 `0`에서 `1` 이상으로 바뀌는 전환에 알림을 보내며, `NOTIFY_ON_START_IF_AVAILABLE=true`이면 시작 시점에 이미 재고가 있어도 한 번 알립니다.
 `REFRESH_REQUEST_TIMESTAMPS=true`이면 요청 직전 `param` 안의 `rsvReqsDtm`과 최상위 `updateCallback`을 현재 시각으로 갱신합니다.
 대상 차량을 찾지 못하면 `DEBUG_RESPONSE_FILE=./last-response.json`을 설정한 뒤 다시 실행해서 실제 응답을 저장해 확인할 수 있습니다.

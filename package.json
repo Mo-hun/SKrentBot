@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/bot.mjs",
+    "test:discord": "node src/bot.mjs --test-discord",
     "check": "node --check src/bot.mjs"
   },
   "engines": {
