@@ -14,9 +14,15 @@ async function main() {
   loadDotEnv('.env');
 
   const isDiscordTest = process.argv.includes('--test-discord');
-  const config = await readConfig({ requireSkrRequestBody: !isDiscordTest });
+  const isTelegramTest = process.argv.includes('--test-telegram');
+  const isNotificationTest = isDiscordTest || isTelegramTest;
+  const config = await readConfig({ requireSkrRequestBody: !isNotificationTest });
   if (isDiscordTest) {
     await testDiscord(config);
+    return;
+  }
+  if (isTelegramTest) {
+    await testTelegram(config);
     return;
   }
 
@@ -73,7 +79,7 @@ async function checkOnce(config, state, firstRun) {
   );
 
   if (shouldNotify) {
-    await notifyDiscord(config, target, checkedAt);
+    await notifyAvailability(config, target, checkedAt);
   }
 
   await writeState(config.stateFile, {
@@ -128,7 +134,7 @@ function findTargetVehicle(payload, config) {
   return null;
 }
 
-async function notifyDiscord(config, vehicle, checkedAt) {
+async function notifyAvailability(config, vehicle, checkedAt) {
   const availableCount = toNumber(vehicle.avblCrnfCnt);
   const totalCount = toNumber(vehicle.totCrnfCnt);
   const title = 'SK렌터카 예약 가능 차량 감지';
@@ -151,9 +157,26 @@ async function notifyDiscord(config, vehicle, checkedAt) {
       },
     ],
   };
+  const telegramText = [
+    title,
+    '',
+    vehicle.shtpCrnfNm || config.targetName || config.targetShtpCrnfId,
+    `지점: ${vehicle.brnhNm || config.targetBrnhId}`,
+    `가능 대수: ${availableCount}${Number.isFinite(totalCount) ? ` / ${totalCount}` : ''}`,
+    vehicle.lastRntlAmt != null ? `예상 금액: ${formatKrw(vehicle.lastRntlAmt)}` : null,
+    `확인 시각: ${formatKst(checkedAt)}`,
+    '예약 페이지: https://rent.skdirect.co.kr/short-rent/car-list',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   if (config.dryRun) {
-    console.log(`[discord:dry-run] ${JSON.stringify(message, null, 2)}`);
+    console.log(`[notification:dry-run] ${JSON.stringify({ discord: message, telegramText }, null, 2)}`);
+    return;
+  }
+
+  if (config.telegramBotToken && config.telegramChatId) {
+    await sendTelegramMessage(config, telegramText);
     return;
   }
 
@@ -194,6 +217,44 @@ async function testDiscord(config) {
   }
 
   console.log('[discord] test message sent');
+}
+
+async function testTelegram(config) {
+  const checkedAt = new Date();
+  const text = [
+    'SK렌터카 알림 봇 테스트',
+    `대상 차량: ${config.targetName || config.targetShtpCrnfId}`,
+    `지점 ID: ${config.targetBrnhId}`,
+    `테스트 시각: ${formatKst(checkedAt)}`,
+  ].join('\n');
+
+  if (config.dryRun) {
+    console.log(`[telegram:dry-run] ${text}`);
+    return;
+  }
+
+  await sendTelegramMessage(config, text);
+  console.log('[telegram] test message sent');
+}
+
+async function sendTelegramMessage(config, text) {
+  const response = await fetch(
+    `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.telegramChatId,
+        text,
+        disable_web_page_preview: true,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Telegram API returned HTTP ${response.status}: ${body.slice(0, 500)}`);
+  }
 }
 
 async function sendDiscordWebhookMessage(config, message) {
@@ -244,10 +305,17 @@ async function readConfig({ requireSkrRequestBody = true } = {}) {
   const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL;
   const discordBotToken = process.env.DISCORD_BOT_TOKEN;
   const discordChannelId = process.env.DISCORD_CHANNEL_ID;
+  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+  const telegramChatId = process.env.TELEGRAM_CHAT_ID;
 
-  if (!dryRun && !discordWebhookUrl && !(discordBotToken && discordChannelId)) {
+  if (
+    !dryRun &&
+    !discordWebhookUrl &&
+    !(discordBotToken && discordChannelId) &&
+    !(telegramBotToken && telegramChatId)
+  ) {
     throw new Error(
-      'DISCORD_WEBHOOK_URL or DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID is required unless DRY_RUN=true',
+      'Configure DISCORD_WEBHOOK_URL, DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID, or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID unless DRY_RUN=true',
     );
   }
 
@@ -259,6 +327,8 @@ async function readConfig({ requireSkrRequestBody = true } = {}) {
     discordWebhookUrl,
     discordBotToken,
     discordChannelId,
+    telegramBotToken,
+    telegramChatId,
     dryRun,
     targetShtpCrnfId: process.env.TARGET_SHTP_CRNF_ID || '2600000001091',
     targetBrnhId: process.env.TARGET_BRNH_ID || '000012',
