@@ -27,7 +27,7 @@ async function main() {
   }
 
   console.log(
-    `[start] watching ${config.targetName || config.targetShtpCrnfId} at branch ${config.targetBrnhId}`,
+    `[start] mode=${config.watchMode} branch=${config.targetBrnhId || 'any'}`,
   );
   console.log(`[start] interval=${config.pollIntervalMs}ms dryRun=${config.dryRun}`);
 
@@ -53,6 +53,12 @@ async function checkOnce(config, state, firstRun) {
   if (config.debugResponseFile) {
     await writeFile(config.debugResponseFile, `${JSON.stringify(response, null, 2)}\n`);
   }
+
+  if (config.watchMode === 'new_available') {
+    await checkNewAvailableVehicles(config, state, response, checkedAt, firstRun);
+    return;
+  }
+
   const target = findTargetVehicle(response, config);
 
   if (!target) {
@@ -91,6 +97,34 @@ async function checkOnce(config, state, firstRun) {
   });
 }
 
+async function checkNewAvailableVehicles(config, state, response, checkedAt, firstRun) {
+  const vehicles = findVehicleObjects(response, config);
+  const availableVehicles = vehicles.filter(
+    (vehicle) => toNumber(vehicle.avblCrnfCnt) >= config.minAvailableCount,
+  );
+  const currentKeys = availableVehicles.map(vehicleKey);
+  const previousKeys = Array.isArray(state.availableVehicleKeys) ? state.availableVehicleKeys : [];
+  const previousKeySet = new Set(previousKeys);
+  const newVehicles = availableVehicles.filter((vehicle) => !previousKeySet.has(vehicleKey(vehicle)));
+  const shouldNotify = newVehicles.length > 0 && (!firstRun || config.notifyOnStartIfAvailable);
+
+  console.log(
+    `[${checkedAt.toISOString()}] available vehicles=${availableVehicles.length}, new=${newVehicles.length}`,
+  );
+
+  if (shouldNotify) {
+    await notifyNewAvailableVehicles(config, newVehicles, checkedAt);
+  }
+
+  await writeState(config.stateFile, {
+    ...state,
+    lastCheckedAt: checkedAt.toISOString(),
+    watchMode: config.watchMode,
+    availableVehicleKeys: currentKeys,
+    availableVehicleCount: availableVehicles.length,
+  });
+}
+
 async function fetchAvailability(config) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.fetchTimeoutMs);
@@ -118,20 +152,82 @@ async function fetchAvailability(config) {
 }
 
 function findTargetVehicle(payload, config) {
-  for (const item of walkObjects(payload)) {
-    if (!isPlainObject(item)) continue;
-
+  for (const item of findVehicleObjects(payload, config)) {
     const sameVehicle =
       String(item.shtpCrnfId ?? '') === config.targetShtpCrnfId ||
       (config.targetName && String(item.shtpCrnfNm ?? '').includes(config.targetName));
-    const sameBranch = !config.targetBrnhId || String(item.brnhId ?? '') === config.targetBrnhId;
 
-    if (sameVehicle && sameBranch && Object.hasOwn(item, 'avblCrnfCnt')) {
+    if (sameVehicle) {
       return item;
     }
   }
 
   return null;
+}
+
+function findVehicleObjects(payload, config) {
+  const seen = new Set();
+  const vehicles = [];
+
+  for (const item of walkObjects(payload)) {
+    if (!isPlainObject(item)) continue;
+    if (!Object.hasOwn(item, 'avblCrnfCnt')) continue;
+    if (!item.shtpCrnfId && !item.shtpCrnfNm) continue;
+    if (config.targetBrnhId && String(item.brnhId ?? '') !== config.targetBrnhId) continue;
+
+    const key = vehicleKey(item);
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    vehicles.push(item);
+  }
+
+  return vehicles;
+}
+
+function vehicleKey(vehicle) {
+  return [
+    vehicle.brnhId || '',
+    vehicle.shtpCrnfId || '',
+    vehicle.shtpCrnfNm || '',
+    vehicle.yimcCd || '',
+    vehicle.fuelCd || '',
+  ].join('|');
+}
+
+async function notifyNewAvailableVehicles(config, vehicles, checkedAt) {
+  const title = 'SK렌터카 신규 예약 가능 차량 감지';
+  const summary = vehicles.slice(0, config.maxVehiclesPerNotification).map(formatVehicleLine);
+  const extraCount = vehicles.length - summary.length;
+  const lines = [
+    `새로 예약 가능해진 차량: ${vehicles.length}대`,
+    '',
+    ...summary,
+    extraCount > 0 ? `외 ${extraCount}대 더 있음` : null,
+    '',
+    `확인 시각: ${formatKst(checkedAt)}`,
+    '예약 페이지: https://rent.skdirect.co.kr/short-rent/car-list',
+  ].filter(Boolean);
+  const telegramText = [title, '', ...lines].join('\n');
+  const discordMessage = {
+    content: `@here ${title}`,
+    embeds: [
+      {
+        title,
+        description: lines.join('\n'),
+        color: 0x1f8b4c,
+      },
+    ],
+  };
+
+  await sendNotification(config, { discordMessage, telegramText });
+}
+
+function formatVehicleLine(vehicle) {
+  const availableCount = toNumber(vehicle.avblCrnfCnt);
+  const amount = vehicle.lastRntlAmt != null ? `, ${formatKrw(vehicle.lastRntlAmt)}` : '';
+  const branch = vehicle.brnhNm ? ` (${vehicle.brnhNm})` : '';
+  return `- ${vehicle.shtpCrnfNm || vehicle.shtpCrnfId}${branch}: ${availableCount}대${amount}`;
 }
 
 async function notifyAvailability(config, vehicle, checkedAt) {
@@ -171,7 +267,20 @@ async function notifyAvailability(config, vehicle, checkedAt) {
     .join('\n');
 
   if (config.dryRun) {
-    console.log(`[notification:dry-run] ${JSON.stringify({ discord: message, telegramText }, null, 2)}`);
+    console.log(
+      `[notification:dry-run] ${JSON.stringify({ discord: message, telegramText }, null, 2)}`,
+    );
+    return;
+  }
+
+  await sendNotification(config, { discordMessage: message, telegramText });
+}
+
+async function sendNotification(config, { discordMessage, telegramText }) {
+  if (config.dryRun) {
+    console.log(
+      `[notification:dry-run] ${JSON.stringify({ discord: discordMessage, telegramText }, null, 2)}`,
+    );
     return;
   }
 
@@ -181,11 +290,11 @@ async function notifyAvailability(config, vehicle, checkedAt) {
   }
 
   if (config.discordBotToken && config.discordChannelId) {
-    await sendDiscordBotMessage(config, message);
+    await sendDiscordBotMessage(config, discordMessage);
     return;
   }
 
-  await sendDiscordWebhookMessage(config, message);
+  await sendDiscordWebhookMessage(config, discordMessage);
 }
 
 async function testDiscord(config) {
@@ -307,6 +416,11 @@ async function readConfig({ requireSkrRequestBody = true } = {}) {
   const discordChannelId = process.env.DISCORD_CHANNEL_ID;
   const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
   const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+  const watchMode = process.env.WATCH_MODE || 'target';
+
+  if (!['target', 'new_available'].includes(watchMode)) {
+    throw new Error('WATCH_MODE must be target or new_available');
+  }
 
   if (
     !dryRun &&
@@ -330,6 +444,7 @@ async function readConfig({ requireSkrRequestBody = true } = {}) {
     telegramBotToken,
     telegramChatId,
     dryRun,
+    watchMode,
     targetShtpCrnfId: process.env.TARGET_SHTP_CRNF_ID || '2600000001091',
     targetBrnhId: process.env.TARGET_BRNH_ID || '000012',
     targetName: process.env.TARGET_NAME || '2027 그랜저(GN7)가솔린 캘리그래피',
@@ -340,6 +455,7 @@ async function readConfig({ requireSkrRequestBody = true } = {}) {
     notifyOnStartIfAvailable: parseBoolean(process.env.NOTIFY_ON_START_IF_AVAILABLE, true),
     refreshRequestTimestamps: parseBoolean(process.env.REFRESH_REQUEST_TIMESTAMPS, true),
     debugResponseFile: process.env.DEBUG_RESPONSE_FILE || '',
+    maxVehiclesPerNotification: parsePositiveNumber(process.env.MAX_VEHICLES_PER_NOTIFICATION, 10),
   };
 }
 

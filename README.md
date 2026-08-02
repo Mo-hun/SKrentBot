@@ -30,6 +30,7 @@ npm run test:telegram
 ```
 
 봇은 이전 상태를 `STATE_FILE`에 저장합니다. 재고가 `0`에서 `1` 이상으로 바뀌는 전환에 알림을 보내며, `NOTIFY_ON_START_IF_AVAILABLE=true`이면 시작 시점에 이미 재고가 있어도 한 번 알립니다.
+`WATCH_MODE=target`이면 지정 차량만 감시하고, `WATCH_MODE=new_available`이면 해당 일정/지점에서 새로 예약 가능해진 모든 차량을 알립니다.
 `REFRESH_REQUEST_TIMESTAMPS=true`이면 요청 직전 `param` 안의 `rsvReqsDtm`과 최상위 `updateCallback`을 현재 시각으로 갱신합니다.
 대상 차량을 찾지 못하면 `DEBUG_RESPONSE_FILE=./last-response.json`을 설정한 뒤 다시 실행해서 실제 응답을 저장해 확인할 수 있습니다.
 

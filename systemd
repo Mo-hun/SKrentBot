@@ -1,0 +1,63 @@
+Oracle Linux에서는 systemd로 돌리는 게 안전합니다. SSH 닫아도 계속 돌고,
+  죽으면 자동 재시작되고, 재부팅 후에도 올라옵니다.
+
+  프로젝트가 /opt/SKrentBot에 있다고 가정합니다.
+
+  1. 먼저 직접 실행 중이면 끄기
+
+  Ctrl+C
+
+  2. 서비스 파일 생성
+
+  sudo vi /etc/systemd/system/skrent-bot.service
+
+  내용:
+
+  [Unit]
+  Description=SK Rent Availability Bot
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  Type=simple
+  User=opc
+  WorkingDirectory=/opt/SKrentBot
+  ExecStart=/usr/bin/npm run start
+  Restart=always
+  RestartSec=10
+  Environment=NODE_ENV=production
+
+  [Install]
+  WantedBy=multi-user.target
+
+  3. 적용 및 시작
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable skrent-bot
+  sudo systemctl start skrent-bot
+
+  4. 상태 확인
+
+  sudo systemctl status skrent-bot
+
+  5. 실시간 로그 확인
+
+  journalctl -u skrent-bot -f
+
+  운영 중 코드 업데이트할 때:
+
+  cd /opt/SKrentBot
+  git pull
+  npm run check
+  sudo systemctl restart skrent-bot
+
+  멈추기:
+
+  sudo systemctl stop skrent-bot
+
+  자동 시작 해제:
+
+  sudo systemctl disable skrent-bot
+
+  .env는 /opt/SKrentBot/.env에 그대로 두면 됩니다. 서비스가
+  WorkingDirectory=/opt/SKrentBot에서 실
